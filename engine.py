@@ -4,10 +4,10 @@ from strategy import check_entry
 from telegram import send
 from config import *
 
-LAST_SIGNAL_TIME = None
+LAST_SIGNAL_TIME = {}
 
-def fetch():
-    url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_PAIR}&interval={INTERVAL}"
+def fetch(pair):
+    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={INTERVAL}"
     r = requests.get(url).json()
     key = list(r['result'].keys())[0]
     data = r['result'][key]
@@ -23,7 +23,17 @@ def fetch():
 def run():
     global LAST_SIGNAL_TIME
 
-    df = fetch()
+    for symbol, kraken_pair in PAIRS.items():
+
+        df = fetch(kraken_pair)
+        df = add_indicators(df).dropna().reset_index(drop=True)
+
+        i = len(df) - 2
+        signal_time = df.iloc[i]['timestamp']
+
+        if LAST_SIGNAL_TIME.get(symbol) == signal_time:
+            continue
+
     df = add_indicators(df).dropna().reset_index(drop=True)
 
     i = len(df)-2
@@ -48,7 +58,7 @@ def run():
         tp = entry - TP_ATR * atr
 
     msg = f"""
-🚨 *BTCUSDT 15M SIGNAL*
+🚨 *{symbol} {INTERVAL}M SIGNAL*
 
 Time : {signal_time}
 Side : *{sig.upper()}*
@@ -61,4 +71,5 @@ Model: Liquidity Sweep
 """
 
     send(msg)
-    LAST_SIGNAL_TIME = signal_time
+    LAST_SIGNAL_TIME[symbol] = signal_time
+
