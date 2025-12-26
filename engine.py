@@ -1,4 +1,5 @@
-import requests, pandas as pd
+import pandas as pd
+import requests
 from indicators import add_indicators
 from strategy import check_entry
 from telegram import send
@@ -8,7 +9,7 @@ LAST_SIGNAL_TIME = {}
 
 def fetch(pair):
     url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={INTERVAL}"
-    r = requests.get(url).json()
+    r = requests.get(url, timeout=10).json()
     key = list(r['result'].keys())[0]
     data = r['result'][key]
 
@@ -18,7 +19,9 @@ def fetch(pair):
     df = df[['timestamp','open','high','low','close']]
     df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-    return df
+
+    return df.sort_values("timestamp").reset_index(drop=True)
+
 
 def run():
     global LAST_SIGNAL_TIME
@@ -28,48 +31,49 @@ def run():
         df = fetch(kraken_pair)
         df = add_indicators(df).dropna().reset_index(drop=True)
 
-        i = len(df) - 2
-        signal_time = df.iloc[i]['timestamp']
-
-        if LAST_SIGNAL_TIME.get(symbol) == signal_time:
+        # 🔒 pastikan cukup data seperti backtest
+        if len(df) < 120:
             continue
 
-    df = add_indicators(df).dropna().reset_index(drop=True)
+        # 📌 candle terakhir yang SUDAH CLOSE
+        i = len(df) - 2
+        candle_time = df.iloc[i]['timestamp']
 
-    i = len(df)-2
-    signal_time = df.iloc[i]['timestamp']
+        # ⛔ sudah diproses
+        if LAST_SIGNAL_TIME.get(symbol) == candle_time:
+            continue
 
-    if LAST_SIGNAL_TIME == signal_time:
-        return
+        # 🧠 STRATEGY SAMA PERSIS
+        sig = check_entry(df, i)
+        if not sig:
+            LAST_SIGNAL_TIME[symbol] = candle_time
+            continue
 
-    sig = check_entry(df, i)
-    if not sig:
-        return
+        row = df.iloc[i]
+        atr = row['ATR']
+        entry = row['open']  # SAMA DENGAN BACKTEST
 
-    row = df.iloc[i]
-    atr = row['ATR']
-    entry = row['close']
+        if sig == 'long':
+            sl = entry - STOP_ATR * atr
+            tp = entry + TP_ATR * atr
+        else:
+            sl = entry + STOP_ATR * atr
+            tp = entry - TP_ATR * atr
 
-    if sig == 'long':
-        sl = entry - STOP_ATR * atr
-        tp = entry + TP_ATR * atr
-    else:
-        sl = entry + STOP_ATR * atr
-        tp = entry - TP_ATR * atr
-
-    msg = f"""
+        msg = f"""
 🚨 *{symbol} {INTERVAL}M SIGNAL*
 
-Time : {signal_time}
-Side : *{sig.upper()}*
-Entry: `{entry:.2f}`
-Stop : `{sl:.2f}`
-TP   : `{tp:.2f}`
+🕒 Time  : {candle_time}
+📍 Side  : *{sig.upper()}*
+🎯 Entry : `{entry:.2f}`
+🛑 Stop  : `{sl:.2f}`
+🏁 TP    : `{tp:.2f}`
 
 ATR : {atr:.2f}
-Model: Liquidity Sweep
+Model: Liquidity Sweep + Confirmation
 """
 
-    send(msg)
-    LAST_SIGNAL_TIME[symbol] = signal_time
+        send(msg)
 
+        # ✅ MARK candle as processed
+        LAST_SIGNAL_TIME[symbol] = candle_time
